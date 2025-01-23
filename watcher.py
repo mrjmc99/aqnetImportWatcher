@@ -41,6 +41,7 @@ smtp_password = os.getenv("SMTP_PASSWORD")
 smtp_from = f"{os.environ['COMPUTERNAME']}"
 smtp_from_domain = os.getenv("SMTP_FROM_DOMAIN")
 smtp_recipients = os.getenv("SMTP_RECIPIENTS", "").split(",")
+node_name = f"{os.environ['COMPUTERNAME']}"
 
 # Meme Variables
 successful_restart_meme_path = os.path.join('memes', os.getenv("SUCCESSFUL_RESTART_MEME")
@@ -181,7 +182,7 @@ def find_oldest_subfolder(folder_path):
     ]
     if not entries:
         return None
-    entries.sort(key=lambda e: e.stat().st_ctime)
+    entries.sort(key=lambda e: e.stat().st_mtime)
     return entries[0].path
 
 
@@ -193,73 +194,129 @@ def find_oldest_dcm_file(folder_path):
                 dcm_files.append(entry)
     if not dcm_files:
         return None
-    dcm_files.sort(key=lambda e: e.stat().st_ctime)
+    dcm_files.sort(key=lambda e: e.stat().st_mtime)
     return dcm_files[0].path
 
 
 def main():
-    # Adjust paths as needed
-    root_folder = os.getenv("ROOT_FOLDER")
+    root_folder = os.getenv("ROOT_FOLDER")  # e.g. E:\AQNetCache
+    if not root_folder:
+        logging.error("ROOT_FOLDER is not set in .env. Exiting.")
+        return
+
     import_folder = os.path.join(root_folder, "AQNetImport")
     old_folder = os.path.join(root_folder, "AQNetImport_old")
     os.makedirs(old_folder, exist_ok=True)
 
-    # Proceed with the stuck-file check
-    oldest_subfolder = find_oldest_subfolder(import_folder)
-    if not oldest_subfolder:
+    # Gather all subfolders (ignoring _invalidFiles)
+    subfolders = []
+    try:
+        with os.scandir(import_folder) as entries:
+            for entry in entries:
+                if entry.is_dir() and entry.name != '_invalidFiles':
+                    subfolders.append(entry)
+    except FileNotFoundError:
+        logging.error(f"Import folder not found: {import_folder}. Exiting.")
+        return
+
+    if not subfolders:
         logging.info("No subfolders found in AQNetImport. Exiting.")
         return
 
-    oldest_dcm = find_oldest_dcm_file(oldest_subfolder)
-    if not oldest_dcm:
-        logging.info(f"No .dcm files found in {oldest_subfolder}. Exiting.")
-        return
+    # Sort subfolders by modification time (oldest first)
+    subfolders.sort(key=lambda e: e.stat().st_mtime)
 
-    logging.info(f"Oldest .dcm file found: {oldest_dcm}")
+    # Now check each subfolder in ascending order
+    for subfolder in subfolders:
+        oldest_dcm = find_oldest_dcm_file(subfolder.path)
+        if not oldest_dcm:
+            logging.info(f"No .dcm files found in {subfolder.path}. Skipping.")
+            continue
 
-    # Wait 30 seconds to confirm if it's stuck
-    logging.info("Waiting 30 seconds to see if this file remains stuck...")
-    time.sleep(30)
+        logging.info(f"Found oldest .dcm file in {subfolder.path}: {oldest_dcm}")
+        logging.info("Checking if file is processed; up to 60 seconds total.")
+        file_got_processed = False
+        for _ in range(60):
+            time.sleep(1)
+            if not os.path.exists(oldest_dcm):
+                logging.info("File was processed or moved. Skipping further checks.")
+                file_got_processed = True
+                break
 
-    if not os.path.exists(oldest_dcm):
-        logging.info(f"The file {oldest_dcm} was processed or moved. Exiting.")
-        return
+        if file_got_processed:
+            break  # End script as processing is working normally
 
-    logging.warning(f"The file {oldest_dcm} still exists after 30 seconds. Checking for running services before moving it to AQNetImport_old.")
+        if not os.path.exists(oldest_dcm):
+            logging.info(f"The file {oldest_dcm} was processed or moved. Skipping.")
+            continue
 
-    # Check if the service is running
-    service_name = os.getenv("SERVICE_NAME")
+        logging.warning(
+            f"The file {oldest_dcm} is still present after 30 seconds. "
+            f"Checking service status before moving it."
+        )
 
-    if not is_service_running(service_name):
-        logging.warning(f"WARNING: Service '{service_name}' is NOT running. "
-              "Stuck .dcm files might not get processed, Exiting and taking no action")
-        subject = f"AQNET Import is Not Processing Dicom Images on {smtp_from}(Service Not Running)"
-        body = f"AQNET Import is Not Processing DCM files (Service Not Running)\nFile: {oldest_dcm} is still waiting to be processed\n{service_name} is not Running, Please Investigate"
-        generate_meme(unsuccessful_restart_meme_path, "ONE DOES NOT SIMPLY", f"Resume Processing Dicom Files on {smtp_from}",
-                      temp_meme_path)
-        logging.info(f"Sending email to {smtp_recipients}")
-        send_email(smtp_recipients, subject, body,smtp_from, smtp_from_domain, smtp_server, smtp_port,
-                   temp_meme_path)
-        os.remove(temp_meme_path)
-        return
+        service_name = os.getenv("SERVICE_NAME")
+        if not is_service_running(service_name):
+            # Service is not running: send "failed" email and stop checking further subfolders
+            logging.warning(f"Service '{service_name}' is NOT running. Exiting.")
+            subject = f"AQNET Import is Not Processing Dicom Images on {node_name} (Service Not Running)"
+            body = (
+                f"AQNET Import is Not Processing DCM files (Service Not Running)\n"
+                f"File: {oldest_dcm} is still waiting to be processed\n"
+                f"Service {service_name} is not Running. Please investigate."
+            )
+            try:
+                generate_meme(
+                    unsuccessful_restart_meme_path,
+                    "ONE DOES NOT SIMPLY",
+                    f"Resume Processing Dicom Files on {node_name}",
+                    temp_meme_path
+                )
+                logging.info(f"Sending 'service not running' email to {smtp_recipients}")
+                send_email(
+                    smtp_recipients, subject, body,
+                    node_name, smtp_from_domain, smtp_server, smtp_port,
+                    temp_meme_path
+                )
+                if os.path.exists(temp_meme_path):
+                    os.remove(temp_meme_path)
+            except Exception as e:
+                logging.error(f"Failed to generate or send meme/email: {e}")
 
+            # Stop processing other subfolders
+            return
 
-    logging.info(f"Moving The file {oldest_dcm} to AQNetImport_old.")
-    file_name = os.path.basename(oldest_dcm)
-    destination_path = os.path.join(old_folder, file_name)
-    try:
-        shutil.move(oldest_dcm, destination_path)
-        logging.info(f"File moved to {destination_path}")
-        subject = f"AQNET Import Dicom Image Processing Restored on {smtp_from}"
-        body = f"AQNET Import Dicom Image Processing Restored on {smtp_from}\nFile: {oldest_dcm} was moved to the AQNETImport_old folder"
-        generate_meme(successful_restart_meme_path, f"AQNET Import Dicom Image Processing Restored on {smtp_from}",
-                      "", temp_meme_path)
-        logging.info(f"Sending email to {smtp_recipients}")
-        send_email(smtp_recipients, subject, body, smtp_from, smtp_from_domain, smtp_server, smtp_port,
-                   temp_meme_path)
-        os.remove(temp_meme_path)
-    except Exception as e:
-        logging.error(f"Failed to move file. Error: {e}")
+        # Service is running; move stuck file
+        file_name = os.path.basename(oldest_dcm)
+        destination_path = os.path.join(old_folder, file_name)
+        try:
+            shutil.move(oldest_dcm, destination_path)
+            logging.info(f"File moved to {destination_path}")
+            subject = f"AQNET Import Dicom Image Processing Restored on {node_name}"
+            body = (
+                f"AQNET Import Dicom Image Processing Restored on {node_name}\n"
+                f"File: {oldest_dcm} was moved to the AQNETImport_old folder."
+            )
+            generate_meme(
+                successful_restart_meme_path,
+                f"AQNET Import Dicom Image Processing Restored on {node_name}",
+                "",
+                temp_meme_path
+            )
+            logging.info(f"Sending 'stuck file moved' email to {smtp_recipients}")
+            send_email(
+                smtp_recipients, subject, body,
+                node_name, smtp_from_domain, smtp_server, smtp_port,
+                temp_meme_path
+            )
+            if os.path.exists(temp_meme_path):
+                os.remove(temp_meme_path)
+
+        except Exception as e:
+            logging.error(f"Failed to move file. Error: {e}")
+
+    # If we finish the loop without returning, we've processed all subfolders
+    logging.info("Finished checking all subfolders.")
 
 
 if __name__ == "__main__":
