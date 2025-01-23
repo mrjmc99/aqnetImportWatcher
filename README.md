@@ -19,7 +19,7 @@ This Python script monitors a directory containing DICOM (`.dcm`) files for a hu
 
 1. **Directory Monitoring**  
    - Looks for the oldest subfolder (ignoring `_invalidFiles`) in `AQNetImport`.  
-   - Checks if there is a `.dcm` file that’s older than 30 seconds, assuming it might be stuck.
+   - Checks if there is a `.dcm` file in that folder, then watches to see if it processes for upto 60 seconds.
 
 2. **Service Check**  
    - Verifies whether the `AQNetDICOMImport` service (or another specified service) is running.
@@ -43,8 +43,8 @@ This Python script monitors a directory containing DICOM (`.dcm`) files for a hu
    - Ignores `_invalidFiles`.  
    - Finds the oldest subfolder by creation time.
 3. It looks for the oldest `.dcm` file in that subfolder.
-4. Pauses for 30 seconds to confirm if the file is stuck (i.e., not being processed).
-5. If the file still exists, checks the Windows service (specified by `SERVICE_NAME`):
+4. Rechecks the file for upto 60 seconds to confirm if the file is stuck (i.e., not being processed).
+5. If the file still exists after 60 seconds, it checks the Windows service (specified by `SERVICE_NAME`):
    - If the service is **not running**, an email (with a meme) is sent out indicating the issue and no further action is taken.
    - If the service **is running**, the script moves the file to `AQNetImport_old` and sends a “success” email (with a meme) indicating that the stuck file was moved.
 
