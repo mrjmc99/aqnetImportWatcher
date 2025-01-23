@@ -12,12 +12,20 @@ from email.mime.text import MIMEText
 from dotenv import load_dotenv
 from PIL import Image, ImageDraw, ImageFont
 
-# set up logging
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
 # Get the absolute path of the script
 script_dir = os.path.dirname(os.path.abspath(__file__))
 
+# Set up logging
+log_file_path = os.path.join(script_dir, "watcher.log")
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s]: %(message)s',
+    handlers=[
+        logging.FileHandler(log_file_path),
+        logging.StreamHandler()
+    ]
+)
 
 # Set env files to load
 script_dotenv_path = os.path.join(os.path.dirname(__file__), 'watcher.env')
