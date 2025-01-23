@@ -236,10 +236,11 @@ def main():
         logging.info(f"Found oldest .dcm file in {subfolder.path}: {oldest_dcm}")
         logging.info("Checking if file is processed; up to 60 seconds total.")
         file_got_processed = False
-        for _ in range(60):
+        for i in range(60):
             time.sleep(1)
+            checks = i + 1
             if not os.path.exists(oldest_dcm):
-                logging.info("File was processed or moved. Skipping further checks.")
+                logging.info(f"File was processed or moved after {checks} Seconds. Skipping further checks.")
                 file_got_processed = True
                 break
 
